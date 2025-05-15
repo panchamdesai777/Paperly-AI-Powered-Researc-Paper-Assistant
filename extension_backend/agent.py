@@ -1,0 +1,235 @@
+from langchain_groq import ChatGroq
+from langchain.agents import initialize_agent, Tool
+from langchain_community.tools.arxiv.tool import ArxivQueryRun
+from typing import Dict, Any
+
+from retriever import PineconeRetriever
+
+class ResearchAgent:
+    def __init__(self, groq_key: str, embeddings, retriever: PineconeRetriever, pinecone_index_name: str = 'paperly'):
+        """
+        Initialize the Research Agent with necessary API keys and configurations.
+        
+        Args:
+            retriever (PineconeRetriever): Retriever for Pinecone
+            groq_key (str): API key for Groq
+            pinecone_index_name (str): Name of the Pinecone index to use
+        """
+        self.pinecone_index_name = pinecone_index_name
+        self.retriever = PineconeRetriever(embeddings=embeddings, index_name=self.pinecone_index_name)
+        
+        # Initialize LLM
+        self.llm = ChatGroq(
+            groq_api_key=groq_key,
+            model_name="llama3-8b-8192"
+        )
+        
+        # Initialize arXiv tool
+        self.arxiv = ArxivQueryRun()
+
+
+    def pinecone_retriever_fn(self, query: str, url: str) -> str:
+        """
+        Retrieve relevant documents from Pinecone based on the query.
+        
+        Args:
+            query (str): The search query
+            url (str): The URL to filter results by. This is required to ensure we only get results from the correct document.
+        """
+        try:
+            
+            concatenated_text = self.retriever.get_relevant_documents(query, url, 7)
+            return concatenated_text if concatenated_text else "No relevant documents found."
+        except Exception as e:
+            return f"Error retrieving documents: {str(e)}"
+
+    def structured_summary_fn(self, text: str, url: str) -> str:
+        """
+        Generate a structured summary based on specific questions about the text.
+        """
+        try:
+            # Define the questions for the summary
+            questions = [
+                "What is the main topic or subject of this text?",
+                "What are the key experiments or methods described?",
+                "What are the main findings or results?",
+                "How was the work evaluated or validated?",
+                "What are the key conclusions or implications?"
+            ]
+            
+            answers = []
+
+            # Process each question separately
+            for question in questions:
+                query = f"{text}\n{question}"
+                context = self.retriever.get_relevant_documents(query, url, 5)
+                
+                if not context:
+                    answers.append(f"Question: {question}\nAnswer: No relevant documents found.")
+                    continue
+                    
+                prompt = f"""Based on the following text and retrieved documents, please answer this specific question in 2-3 sentences:
+
+Question: {question}
+
+Original Text:
+{text}
+
+Retrieved Documents:
+{context}
+
+Provide a concise and focused answer that directly addresses the question."""
+
+                response = self.llm.invoke(prompt)
+                answers.append(f"Question: {question}\nAnswer: {response.content}")
+                
+            final_prompt = f"""Based on the following answers to specific questions, create a coherent and detailed summary in less than 300 words total.
+Maintain the structure of addressing each question but make it flow naturally as a single summary.
+
+{chr(10).join(answers)}
+
+Create a well-structured summary that flows naturally while addressing all the questions."""
+
+            final_response = self.llm.invoke(final_prompt)
+            return final_response.content
+            
+        except Exception as e:
+            return f"Error generating summary: {str(e)}"
+
+    def _is_summary_request(self, query: str) -> bool:
+        """
+        Check if the query is requesting a summary of the paper.
+        
+        Args:
+            query (str): The user's query
+            
+        Returns:
+            bool: True if the query is requesting a summary, False otherwise
+        """
+        summary_keywords = [
+            "summarize", "summary", "summarise", "overview", "comprehensive report",
+            "give me a summary", "can you summarize", "what is this paper about",
+            "main points", "key findings", "conclusion", "synopsis",
+            "brief overview", "main ideas", "core concepts", "central themes"
+        ]
+        
+        query_lower = query.lower()
+        return any(keyword in query_lower for keyword in summary_keywords)
+
+    def process_question(self, query: str, url: str, title: str, level: str) -> str:
+        """
+        Process a user question about the research paper.
+        
+        Args:
+            query (str): The user's question about the paper
+            url (str): The URL of the paper
+            
+        Returns:
+            str: The answer generated by the agent
+        """
+        try:
+            # Initialize agent with the current query and URL
+            self.agent_config = self._initialize_agent_tools(url, query, title)
+            self.agent = self.agent_config["agent"]
+            self.tools = self.agent_config["tools"]
+            
+            # Add context about the paper to the query
+            enhanced_query = f"""You are a research assistant. Please answer this question about the research paper as expected by the user:
+{query}
+
+You have access to the following tools:
+- Research Paper Question Answering Retriever: You can use this tool to search through the indexed research paper content. The output of the tool will be used to answer the question.
+- Paper Summary Generator: You can use this tool to generate a summary of the entire research paper in less than 300 words. The output of the static questions from the summary tool will be used to answer the question.
+- Paper Recommender: You can use this tool to find and recommend relevant research papers from arXiv based on the current paper's title. The output from the tool will be returned as it is.
+"""
+            
+            # Process the question using the agent with URL context
+            response = self.agent.run({
+                "input": enhanced_query,
+                "url": url,
+                "title": title,
+                "level": level,
+                "chat_history": []
+            })
+            return response
+            
+        except Exception as e:
+            return f"Error processing question: {str(e)}"
+
+    def _initialize_agent_tools(self, url: str, query: str, title: str) -> Dict[str, Any]:
+        """
+        Initialize the agent with its tools and LLM.
+        
+        Args:
+            url (str): The URL of the paper
+            query (str): The user's query
+        """
+        # Determine which tools to include based on the query
+        tools = []
+        
+        # Always include the retriever tool for basic question answering
+        tools.append(
+            Tool(
+                name="Research Paper Retriever",
+                func=lambda q: self.pinecone_retriever_fn(q, url),
+                description="Use this tool to search through the indexed research paper content. Input should be a specific question about the paper's content. The tool will return relevant excerpts from the paper that can help answer the question."
+            )
+        )
+        
+        # Only include the summary tool if the query is asking for a summary
+        if self._is_summary_request(query):
+            tools.append(
+                Tool(
+                    name="Paper Summary Generator",
+                    func=lambda text: self.structured_summary_fn(text, url),
+                    description="Use this tool to generate summary of the entire research paper. Input should be the text content you want summarized. The tool will analyze the text and provide a structured summary covering key points, methods, findings, and conclusions."
+                )
+            )
+            
+        # Add the paper recommendation tool
+        tools.append(
+            Tool(
+                name="Paper Recommender",
+                func=lambda _: self.recommend_papers_fn(title),
+                description="Use this tool to find and recommend relevant research papers from arXiv based on the current paper's title. The tool will return a list of relevant papers with their titles, authors, and summaries. The title is automatically provided from the current context.",
+                return_direct=True
+            )
+        )
+        
+
+        # Initialize agent with enhanced configuration
+        agent = initialize_agent(
+            tools,
+            self.llm,
+            agent="chat-conversational-react-description",
+            verbose=True,
+            max_iterations=3,
+            early_stopping_method="generate",
+            handle_parsing_errors=True
+        )
+        
+        return {
+            "agent": agent,
+            "tools": tools,
+            "llm": self.llm
+        }
+
+    def recommend_papers_fn(self, title: str) -> str:
+        """
+        Recommend papers based on the current paper's title using arXiv.
+        
+        Args:
+            title (str): The title of the current paper to find similar papers for
+            
+        Returns:
+            str: Raw results from arXiv search
+        """
+        try:
+            if not title:
+                return "No title provided to find similar papers."
+                
+            # Return raw results from arXiv search
+            return self.arxiv.run(title)
+            
+        except Exception as e:
+            return f"Error recommending papers: {str(e)}"

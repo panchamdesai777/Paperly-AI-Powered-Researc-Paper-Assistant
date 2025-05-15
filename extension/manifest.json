@@ -1,0 +1,50 @@
+{
+  "manifest_version": 3,
+  "name": "Research Paper Explainer",
+  "version": "1.0",
+  "description": "Easily understand research papers by selecting text to get explanations",
+  "permissions": [
+    "activeTab",
+    "storage",
+    "scripting"
+  ],
+  "host_permissions": [
+    "https://*.pdf/*",
+    "https://*.arxiv.org/*",
+    "https://*.sciencedirect.com/*",
+    "https://*.nature.com/*",
+    "https://*.ieee.org/*",
+    "http://localhost/*"
+  ],
+  "web_accessible_resources": [{
+    "resources": ["icons/*"],
+    "matches": ["<all_urls>"]
+  }],
+  "action": {
+    "default_popup": "popup.html",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://*.pdf/*",
+        "https://*.arxiv.org/*",
+        "https://*.sciencedirect.com/*",
+        "https://*.nature.com/*",
+        "https://*.ieee.org/*",
+        "http://localhost/*"
+      ],
+      "js": ["content.js"],
+      "css": ["styles.css"]
+    }
+  ],
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  }
+} 
