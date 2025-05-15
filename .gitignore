@@ -1,0 +1,21 @@
+# Python virtual environment
+extension_backend/venv/
+
+# Python cache files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Environment variables
+.env
+
+# IDE specific files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Distribution / packaging
+dist/
+build/
+*.egg-info/ Genai_Final_Project_Slides.pptx
